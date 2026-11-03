@@ -648,6 +648,7 @@ public:
     static bool is_multiple_sample_rate_combo_supported;
     /* Variable to store whether Speaker protection is enabled or not */
     static bool isSpeakerProtectionEnabled;
+    static bool isAutonomousSmartPaAvailable();
     static bool isHandsetProtectionEnabled;
     static bool isHapticsProtectionEnabled;
     static bool isChargeConcurrencyEnabled;

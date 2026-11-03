@@ -47,10 +47,10 @@ std::shared_ptr<Device> Speaker::getInstance(struct pal_device *device,
 {
     if (!obj) {
         if (ResourceManager::isSpeakerProtectionEnabled) {
+            PAL_DBG(LOG_TAG, "Speaker protection enabled");
             std::shared_ptr<Device> sp(new SpeakerProtection(device, Rm));
             obj = sp;
-        }
-        else {
+        } else {
             std::shared_ptr<Device> sp(new Speaker(device, Rm));
             obj = sp;
         }

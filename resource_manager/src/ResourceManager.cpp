@@ -40,6 +40,7 @@
 #include <unistd.h>
 #include <dlfcn.h>
 #include <mutex>
+#include <dirent.h>
 #include <iostream>
 #include <fstream>
 #include <sys/ioctl.h>
@@ -521,6 +522,44 @@ int ResourceManager::wake_unlock_fd = -1;
 uint32_t ResourceManager::wake_lock_cnt = 0;
 static int max_session_num;
 bool ResourceManager::isSpeakerProtectionEnabled = false;
+
+bool ResourceManager::isAutonomousSmartPaAvailable()
+{
+    static std::once_flag checkOnce;
+    static bool isSmartPa = false;
+    std::call_once(checkOnce, []() {
+        DIR *dir = opendir("/proc");
+        if (dir) {
+            struct dirent *ent;
+            while ((ent = readdir(dir)) != nullptr) {
+                int addr = 0;
+                if (sscanf(ent->d_name, "tfa98xx-%x", &addr) == 1) {
+                    isSmartPa = true;
+                    break;
+                }
+            }
+            closedir(dir);
+        }
+        if (!isSmartPa) {
+            dir = opendir("/sys/bus/i2c/drivers/tfa98xx");
+            if (dir) {
+                struct dirent *ent;
+                while ((ent = readdir(dir)) != nullptr) {
+                    int bus = 0, addr = 0;
+                    if (sscanf(ent->d_name, "%d-%x", &bus, &addr) == 2) {
+                        isSmartPa = true;
+                        break;
+                    }
+                }
+                closedir(dir);
+            }
+        }
+        if (isSmartPa) {
+            PAL_INFO(LOG_TAG, "Autonomous SmartPA detected via sysfs/proc");
+        }
+    });
+    return isSmartPa;
+}
 bool ResourceManager::isHandsetProtectionEnabled = false;
 bool ResourceManager::isHapticsProtectionEnabled = false;
 bool ResourceManager::isChargeConcurrencyEnabled = false;

@@ -537,7 +537,8 @@ int SessionAlsaUtils::open(Stream * streamHandle, std::shared_ptr<ResourceManage
 
         deviceCKV.clear();
 
-        if (ResourceManager::isSpeakerProtectionEnabled) {
+        if (ResourceManager::isSpeakerProtectionEnabled &&
+            !ResourceManager::isAutonomousSmartPaAvailable()) {
             PAL_DBG(LOG_TAG, "Speaker protection enabled");
             if (be->first == PAL_DEVICE_OUT_SPEAKER) {
                 status = builder->populateCalKeyVector(streamHandle, deviceCKV,
@@ -1629,7 +1630,8 @@ int SessionAlsaUtils::open(Stream * streamHandle, std::shared_ptr<ResourceManage
         }
     }
     deviceCKV.clear();
-    if (ResourceManager::isSpeakerProtectionEnabled) {
+    if (ResourceManager::isSpeakerProtectionEnabled &&
+        !ResourceManager::isAutonomousSmartPaAvailable()) {
         PAL_DBG(LOG_TAG, "Speaker protection enabled");
         if (rxBackEnds[0].first == PAL_DEVICE_OUT_SPEAKER) {
             status = builder->populateCalKeyVector(streamHandle, deviceCKV,
@@ -2654,7 +2656,8 @@ int SessionAlsaUtils::setupSessionDevice(Stream* streamHandle, pal_stream_type_t
 
     deviceCKV.clear();
 
-    if (ResourceManager::isSpeakerProtectionEnabled) {
+    if (ResourceManager::isSpeakerProtectionEnabled &&
+        !ResourceManager::isAutonomousSmartPaAvailable()) {
         PAL_DBG(LOG_TAG, "Speaker protection enabled");
         if (aifBackEndsToConnect[0].first == PAL_DEVICE_OUT_SPEAKER) {
             status = builder->populateCalKeyVector(streamHandle, deviceCKV,

@@ -71,8 +71,10 @@
 #include "kvh2xml.h"
 #include <agm/agm_api.h>
 
-#include<fstream>
-#include<sstream>
+#include <algorithm>
+#include <dirent.h>
+#include <fstream>
+#include <sstream>
 
 #ifndef PAL_SP_TEMP_PATH
 #define PAL_SP_TEMP_PATH "/data/misc/audio/audio.cal"
@@ -127,6 +129,8 @@ bool SpeakerProtection::isSpkrInUse;
 bool SpeakerProtection::calThrdCreated;
 bool SpeakerProtection::viTxSetupThrdCreated;
 bool SpeakerProtection::isDynamicCalTriggered = false;
+bool SpeakerProtection::isAutonomousSmartPa = false;
+std::vector<int> SpeakerProtection::smartPaAddrs;
 struct timespec SpeakerProtection::spkrLastTimeUsed;
 struct mixer *SpeakerProtection::virtMixer;
 struct mixer *SpeakerProtection::hwMixer;
@@ -362,8 +366,92 @@ int SpeakerProtection::getCpsDevNumber(std::string mixer_name)
     return status;
 }
 
+FILE *SpeakerProtection::openSmartPaNode(int addr, const char *node, const char *mode)
+{
+    char path[128];
+    snprintf(path, sizeof(path), "/proc/tfa98xx-%x/%s", addr, node);
+    FILE *fp = fopen(path, mode);
+    if (!fp) {
+        snprintf(path, sizeof(path), "/sys/kernel/debug/tfa98xx-%x/%s", addr, node);
+        fp = fopen(path, mode);
+    }
+    return fp;
+}
+
+void SpeakerProtection::discoverAutonomousSmartPa()
+{
+    static std::once_flag discoverOnce;
+    std::call_once(discoverOnce, []() {
+        smartPaAddrs.clear();
+
+        // Dynamically discover TFA98xx chips from /proc
+        DIR *dir = opendir("/proc");
+        if (dir) {
+            struct dirent *ent;
+            while ((ent = readdir(dir)) != nullptr) {
+                int addr = 0;
+                if (sscanf(ent->d_name, "tfa98xx-%x", &addr) == 1) {
+                    smartPaAddrs.push_back(addr);
+                }
+            }
+            closedir(dir);
+        }
+
+        // Fallback: Check sysfs i2c driver directory
+        if (smartPaAddrs.empty()) {
+            dir = opendir("/sys/bus/i2c/drivers/tfa98xx");
+            if (dir) {
+                struct dirent *ent;
+                while ((ent = readdir(dir)) != nullptr) {
+                    int bus = 0, addr = 0;
+                    if (sscanf(ent->d_name, "%d-%x", &bus, &addr) == 2) {
+                        smartPaAddrs.push_back(addr);
+                    }
+                }
+                closedir(dir);
+            }
+        }
+
+        std::sort(smartPaAddrs.begin(), smartPaAddrs.end());
+        isAutonomousSmartPa = !smartPaAddrs.empty();
+
+        if (isAutonomousSmartPa) {
+            PAL_INFO(LOG_TAG, "Discovered %zu autonomous SmartPA device(s)", smartPaAddrs.size());
+            for (size_t i = 0; i < smartPaAddrs.size(); i++) {
+                PAL_INFO(LOG_TAG, "  SmartPA[%zu]: I2C address 0x%02x", i, smartPaAddrs[i]);
+            }
+        }
+    });
+}
+
+bool SpeakerProtection::isAutonomousSmartPaAvailable()
+{
+    discoverAutonomousSmartPa();
+    return isAutonomousSmartPa;
+}
+
 int SpeakerProtection::getSpeakerTemperature(int spkr_pos)
 {
+    discoverAutonomousSmartPa();
+    if (isAutonomousSmartPa) {
+        if (smartPaAddrs.empty())
+            return SAFE_SPKR_TEMP;
+
+        int addr = (spkr_pos >= 0 && spkr_pos < (int)smartPaAddrs.size())
+                       ? smartPaAddrs[spkr_pos]
+                       : smartPaAddrs[0];
+        FILE *tf = openSmartPaNode(addr, "TEMP", "r");
+        if (tf) {
+            int temp = SAFE_SPKR_TEMP;
+            if (fscanf(tf, "%d", &temp) == 1) {
+                fclose(tf);
+                return temp;
+            }
+            fclose(tf);
+        }
+        return SAFE_SPKR_TEMP;
+    }
+
     struct mixer_ctl *ctl;
     std::string mixer_ctl_name;
     int status = 0;
@@ -1267,6 +1355,42 @@ SpeakerProtection::SpeakerProtection(struct pal_device *device,
         goto exit;
     }
 
+    discoverAutonomousSmartPa();
+    if (isAutonomousSmartPa) {
+        PAL_INFO(LOG_TAG, "Autonomous SmartPA detected, checking hardware calibration");
+        for (int addr : smartPaAddrs) {
+            FILE *mtp_fp = openSmartPaNode(addr, "MTPEX", "r");
+            if (mtp_fp) {
+                int mtpex = 0;
+                if (fscanf(mtp_fp, "%d", &mtpex) == 1 && mtpex == 1) {
+                    spkrCalState = SPKR_CALIBRATED;
+                    PAL_INFO(LOG_TAG, "SmartPA (0x%x) hardware calibration active (MTPEX=1)", addr);
+                }
+                fclose(mtp_fp);
+                if (spkrCalState == SPKR_CALIBRATED)
+                    break;
+            }
+        }
+        if (spkrCalState != SPKR_CALIBRATED) {
+            static const char *const persistCalPaths[] = {
+                "/mnt/vendor/persist/media/tfa_cali.bin",
+                "/mnt/vendor/persist/audio/tfa_cali.bin",
+                "/persist/media/tfa_cali.bin",
+            };
+            for (const char *path : persistCalPaths) {
+                fp = fopen(path, "rb");
+                if (fp) {
+                    spkrCalState = SPKR_CALIBRATED;
+                    PAL_INFO(LOG_TAG, "SmartPA calibration file found at %s", path);
+                    fclose(fp);
+                    break;
+                }
+            }
+        }
+        calThrdCreated = false;
+        goto exit;
+    }
+
     fp = fopen(PAL_SP_TEMP_PATH, "rb");
     if (fp) {
         PAL_DBG(LOG_TAG, "Cal File exists. Reading from it");
@@ -1971,6 +2095,25 @@ int32_t SpeakerProtection::spkrProtProcessingMode(bool flag)
     PAL_DBG(LOG_TAG, "Flag %d", flag);
     deviceMutex.lock();
 
+    if (isAutonomousSmartPa) {
+        PAL_DBG(LOG_TAG, "Autonomous SmartPA processing mode flag=%d", flag);
+        if (flag) {
+            numberOfRequest++;
+            spkrProtSetSpkrStatus(true);
+        } else {
+            if (numberOfRequest > 0)
+                numberOfRequest--;
+            if (numberOfRequest == 0)
+                spkrProtSetSpkrStatus(false);
+        }
+        deviceMutex.unlock();
+        if (builder) {
+            delete builder;
+            builder = NULL;
+        }
+        return 0;
+    }
+
     rm = ResourceManager::getInstance();
     if (!rm) {
         PAL_ERR(LOG_TAG, "Failed to get resource manager instance");
@@ -2542,7 +2685,7 @@ int32_t SpeakerProtection::setParameter(uint32_t param_id, void *param)
 {
     PAL_DBG(LOG_TAG, "Inside Speaker Protection Set parameters");
     (void ) param;
-    if (param_id == PAL_SP_MODE_DYNAMIC_CAL)
+    if (param_id == PAL_SP_MODE_DYNAMIC_CAL && !isAutonomousSmartPa)
         speakerProtectionDynamicCal();
     return 0;
 }
@@ -2783,6 +2926,9 @@ int32_t SpeakerProtection::getCalibrationData(void **param)
 
 int32_t SpeakerProtection::getParameter(uint32_t param_id, void **param)
 {
+    if (isAutonomousSmartPa)
+        return -ENOSYS;
+
     int32_t status = 0;
     switch(param_id) {
         case PAL_PARAM_ID_SP_GET_CAL:

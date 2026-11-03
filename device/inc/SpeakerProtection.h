@@ -145,6 +145,10 @@ protected :
     static bool calThrdCreated;
     static bool isDynamicCalTriggered;
     static bool viTxSetupThrdCreated;
+    static bool isAutonomousSmartPa;
+    static std::vector<int> smartPaAddrs;
+    static void discoverAutonomousSmartPa();
+    static FILE *openSmartPaNode(int addr, const char *node, const char *mode);
     static struct timespec spkrLastTimeUsed;
     static struct mixer *virtMixer;
     static struct mixer *hwMixer;
@@ -181,6 +185,7 @@ public:
     void speakerProtectionInit();
     void speakerProtectionDeinit();
     void getSpeakerTemperatureList();
+    static bool isAutonomousSmartPaAvailable();
     static void spkrProtSetSpkrStatus(bool enable);
     static int setConfig(int type, int tag, int tagValue, int devId, const char *aif);
     bool isSpeakerInUse(unsigned long *sec);
